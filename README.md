@@ -4,7 +4,7 @@ A CLI tool to simplify Go WebAssembly development.
 Are you tired of remembering long Go commands and complex flags just to build a simple WebAssembly project? wasmate is a CLI wrapper that handles all the hassle for you. It simplifies the entire workflow, letting you build, run, and manage your Go Wasm applications with just a few intuitive commands.
 
 ## Why Use `wasmate`?
-No More Flags: Stop memorizing `GOOS=js GOARCH=wasm go build`. Just run `wasmate build`.
+- __No More Flags__: Stop memorizing `GOOS=js GOARCH=wasm go build`. Just run `wasmate build`.
 
 - __Simple Workflow__: Go from Go source code to a running web server in three easy steps.
 
