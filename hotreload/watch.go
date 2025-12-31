@@ -11,28 +11,21 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// WatcherOption is a function that configures the Watcher.
 type WatcherOption func(*Watcher)
 
-// WithDebounce sets the duration for debouncing rapid file change events.
 func WithDebounce(d time.Duration) WatcherOption {
 	return func(w *Watcher) {
 		w.debounceTime = d
 	}
 }
 
-// --- Watcher Struct (OOP State and Behavior) ---
-
-// Watcher manages file watching and triggers a callback on relevant changes.
 type Watcher struct {
-	watcher      *fsnotify.Watcher // Underlying fsnotify watcher
+	watcher      *fsnotify.Watcher
 	paths        []string
 	onChange     func()
 	debounceTime time.Duration
-	lastChange   time.Time // State required for debouncing
 }
 
-// NewWatcher creates and initializes a new file watcher.
 func NewWatcher(paths []string, onChange func(), opts ...WatcherOption) (*Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -43,41 +36,27 @@ func NewWatcher(paths []string, onChange func(), opts ...WatcherOption) (*Watche
 		watcher:      watcher,
 		paths:        paths,
 		onChange:     onChange,
-		debounceTime: 500 * time.Millisecond, // Default debounce
+		debounceTime: 500 * time.Millisecond,
 	}
 
-	// Apply functional options to configure the Watcher object
 	for _, opt := range opts {
 		opt(w)
 	}
 
-	// Add all initial paths (recursively if they are directories)
 	for _, path := range paths {
 		if err := w.WatchRecursive(path); err != nil {
-			log.Printf("Warning: Failed to watch initial path %s: %v", path, err)
+			log.Printf("Warning: Failed to watch path %s: %v", path, err)
 		}
 	}
 
 	return w, nil
 }
 
-// --- Helper Functions (Pure Logic) ---
-
-// isRelevantFileOp checks if the event is a Write or Create operation on a .go file.
-func isRelevantFileOp(event fsnotify.Event) bool {
-	// Only watch for Write and Create events
-	if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
-		return false
-	}
-	// Only trigger for .go files
-	return strings.HasSuffix(event.Name, ".go")
-}
-
-// --- Watcher Methods (OOP Behavior) ---
-
-// Start begins watching for file changes in a separate goroutine.
+// Start begins watching with a trailing-edge debounce timer
 func (w *Watcher) Start() {
 	go func() {
+		var timer *time.Timer
+
 		for {
 			select {
 			case event, ok := <-w.watcher.Events:
@@ -85,32 +64,30 @@ func (w *Watcher) Start() {
 					return
 				}
 
-				// 1. Dynamic Directory Watching: If a new directory is created, watch it recursively.
+				// 1. Handle new directories immediately
 				if event.Op&fsnotify.Create != 0 {
 					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						log.Printf("📂 New directory created: %s. Watching recursively...", filepath.Base(event.Name))
-						if err := w.WatchRecursive(event.Name); err != nil {
-							log.Printf("Error watching new directory: %v", err)
-						}
-						continue // Skip onChange for directory creation itself
+						log.Printf("New directory: %s. Adding to watcher...", filepath.Base(event.Name))
+						w.WatchRecursive(event.Name)
+						continue
 					}
 				}
 
-				// 2. Filter: Use the helper function to check for relevant file operations/types.
-				if !isRelevantFileOp(event) {
-					continue
-				}
+				// 2. Filter for relevant Go file changes
+				// Added: Remove and Rename to catch deletions or editor 'atomic saves'
+				if isRelevantFileOp(event) {
+					// 3. Trailing Edge Debounce
+					// If a new event comes in, stop the existing timer and start a new one.
+					// This ensures we only trigger ONCE after the user stops saving files.
+					if timer != nil {
+						timer.Stop()
+					}
 
-				// 3. Debounce: Check the state (`w.lastChange`) to prevent rapid reloads.
-				now := time.Now()
-				if now.Sub(w.lastChange) < w.debounceTime {
-					continue
+					timer = time.AfterFunc(w.debounceTime, func() {
+						log.Printf("Change detected in %s, rebuilding...", filepath.Base(event.Name))
+						w.onChange()
+					})
 				}
-				w.lastChange = now
-
-				// 4. Trigger Action
-				log.Printf("File changed: %s", filepath.Base(event.Name))
-				w.onChange()
 
 			case err, ok := <-w.watcher.Errors:
 				if !ok {
@@ -122,16 +99,30 @@ func (w *Watcher) Start() {
 	}()
 }
 
-// Close stops the underlying fsnotify watcher.
+func isRelevantFileOp(event fsnotify.Event) bool {
+	// Include Create, Write, Remove, and Rename
+	const relevantOps = fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename
+
+	if event.Op&relevantOps == 0 {
+		return false
+	}
+
+	// Ignore temporary files (common in Vim/Emacs/GoLand)
+	base := filepath.Base(event.Name)
+	if strings.HasPrefix(base, ".") || strings.HasSuffix(base, "~") {
+		return false
+	}
+
+	return strings.HasSuffix(event.Name, ".go")
+}
+
 func (w *Watcher) Close() error {
 	return w.watcher.Close()
 }
 
-// WatchRecursive adds the root path and all valid subdirectories to the watcher.
 func (w *Watcher) WatchRecursive(root string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			// Ignore "file does not exist" errors, which can happen during rapid operations.
 			if os.IsNotExist(err) {
 				return nil
 			}
@@ -140,14 +131,16 @@ func (w *Watcher) WatchRecursive(root string) error {
 
 		if info.IsDir() {
 			name := filepath.Base(path)
-			// Skip hidden and common ignored directories
+			// Ignore common high-volume or hidden directories
 			if (strings.HasPrefix(name, ".") && len(name) > 1) || name == "node_modules" || name == "vendor" {
 				return filepath.SkipDir
 			}
 
-			// Add the directory to the watcher
-			if err := w.watcher.Add(path); err != nil && !strings.Contains(err.Error(), "already exists") {
-				return fmt.Errorf("failed to watch directory %s: %w", path, err)
+			if err := w.watcher.Add(path); err != nil {
+				// Ignore 'already exists' errors
+				if !strings.Contains(err.Error(), "already exists") {
+					return fmt.Errorf("failed to watch %s: %w", path, err)
+				}
 			}
 		}
 		return nil
