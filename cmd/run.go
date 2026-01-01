@@ -6,13 +6,15 @@ import (
 	"os"
 	"sync"
 
-	"github.com/gorilla/websocket" // Run: go get github.com/gorilla/websocket
-	"github.com/spf13/cobra"
-	"github.com/vismainair/wasmate/browser"
+	"github.com/gorilla/websocket"
+	"github.com/spf13/cobra"                  // Cobra is the CLI tool used for efficiency
+	"github.com/vismainair/wasmate/browser"   // Homegrown package to open browser
+	"github.com/vismainair/wasmate/hotreload" // Homegrown package for hot-reloading functionality
 )
 
 var port int
 var open bool
+var dev bool
 
 // WebSocket configuration
 var upgrader = websocket.Upgrader{
@@ -40,6 +42,21 @@ var runCmd = &cobra.Command{
 
 		// 2. The WebSocket endpoint for hot-reload signals
 		mux.HandleFunc("/ws", handleWebSocket)
+
+		if dev {
+			watcher, err := hotreload.NewWatcher(
+				[]string{"."},
+				func() {
+					NotifyReload()
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create watcher: %w", err)
+			}
+			defer watcher.Close()
+			watcher.Start()
+			fmt.Fprintf(os.Stdout, "Hot reload enabled. Watching for changes...\n")
+		}
 
 		if open {
 			browser.Open(fmt.Sprintf("http://localhost:%d", port))
@@ -102,4 +119,5 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().IntVarP(&port, "port", "p", 8080, "The port to run the web server on")
 	runCmd.Flags().BoolVarP(&open, "open", "o", false, "Open the app on the default browser")
+	runCmd.Flags().BoolVarP(&dev, "dev", "d", false, "Enable hot-reloading for development")
 }
