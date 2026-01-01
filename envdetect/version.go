@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// FindVersion finds the Go installation version and returns it as a semantic version string.
-// It returns an error if Go is not found or if the version command fails.
+// FindVersion finds the Go installation version and returns it as a semantic version (semver) string.
+// Returns the version string and any errors.
+// Requires Go to be installed and accessible in the system PATH.
 func FindVersion() (string, error) {
 	version, err := exec.Command("go", "version").Output() // Finds the version of Go, but as a string with other elements
 
