@@ -4,6 +4,7 @@ go 1.24.4
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/mod v0.21.0
 )
