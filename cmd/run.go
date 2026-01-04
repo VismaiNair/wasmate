@@ -1,15 +1,17 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/spf13/cobra"                  // Cobra is the CLI tool used for efficiency
-	"github.com/vismainair/wasmate/browser"   // Homegrown package to open browser
-	"github.com/vismainair/wasmate/hotreload" // Homegrown package for hot-reloading functionality
+	"github.com/spf13/cobra"
+	"github.com/vismainair/wasmate/browser"
+	"github.com/vismainair/wasmate/hotreload"
 )
 
 var port int
@@ -27,26 +29,48 @@ var (
 	clientsMu sync.Mutex
 )
 
+// Script to be injected into HTML files
+const reloadScript = `
+<script>
+  (function() {
+    const socket = new WebSocket('ws://' + window.location.host + '/ws');
+    socket.onmessage = function(msg) {
+      if (msg.data === 'reload') {
+        console.log('Wasmate: Change detected, reloading...');
+        window.location.reload();
+      }
+    };
+    socket.onclose = function() {
+      console.log('Wasmate: Hot reload disconnected.');
+    };
+  })();
+</script>
+`
+
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "wasmate run serves all static files over a webserver.",
-	Long:  ``,
 	RunE: func(cmd *cobra.Command, args []string) error {
-
 		mux := http.NewServeMux()
 
-		// 1. The standard file server
+		// 1. Setup the standard file server
 		fs := http.FileServer(http.Dir("."))
 		mux.Handle("/", fs)
 
-		// 2. The WebSocket endpoint for hot-reload signals
+		// 2. Setup the WebSocket endpoint
 		mux.HandleFunc("/ws", handleWebSocket)
 
+		// 3. Setup Middleware and Watcher if dev mode is enabled
+		var handler http.Handler = mux
 		if dev {
+			handler = injectHotReload(mux)
+
 			watcher, err := hotreload.NewWatcher(
 				[]string{"."},
 				func() {
+					// Note: You should eventually add your build logic here
+					// before calling NotifyReload so the .wasm updates first.
 					NotifyReload()
 				},
 			)
@@ -66,7 +90,7 @@ var runCmd = &cobra.Command{
 		fmt.Fprintf(os.Stdout, "The WASM static webserver is starting on http://localhost:%d\n", port)
 		fmt.Fprintf(os.Stdout, "Press Ctrl+C or Command+C to stop the server.\n")
 
-		err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux)
+		err := http.ListenAndServe(fmt.Sprintf(":%d", port), handler)
 		if err != nil {
 			return fmt.Errorf("failed to start server: %w", err)
 		}
@@ -75,7 +99,57 @@ var runCmd = &cobra.Command{
 	},
 }
 
-// handleWebSocket upgrades the HTTP connection and tracks the client
+// --- Middleware & Injection Logic ---
+
+func injectHotReload(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only intercept HTML requests
+		isHtml := strings.Contains(r.Header.Get("Accept"), "text/html") ||
+			strings.HasSuffix(r.URL.Path, ".html") ||
+			r.URL.Path == "/"
+
+		if !isHtml {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Record the response to modify the HTML
+		recorder := &responseRecorder{ResponseWriter: w, body: &bytes.Buffer{}}
+		next.ServeHTTP(recorder, r)
+
+		htmlContent := recorder.body.String()
+		if strings.Contains(htmlContent, "</body>") {
+			// Inject script before closing body tag
+			modifiedHtml := strings.Replace(htmlContent, "</body>", reloadScript+"</body>", 1)
+
+			// Update headers and write the modified content
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Content-Length", fmt.Sprint(len(modifiedHtml)))
+			w.Write([]byte(modifiedHtml))
+		} else {
+			// If no body tag, write original content (e.g., small snippets or malformed HTML)
+			w.Write(recorder.body.Bytes())
+		}
+	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	body *bytes.Buffer
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	return r.body.Write(b)
+}
+
+func (r *responseRecorder) WriteHeader(statusCode int) {
+	// We don't want to send the status code immediately because
+	// changing the body changes the Content-Length
+	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+// --- WebSocket Handling ---
+
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -86,7 +160,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	clients[conn] = true
 	clientsMu.Unlock()
 
-	// Keep connection alive until client disconnects
 	defer func() {
 		clientsMu.Lock()
 		delete(clients, conn)
@@ -101,7 +174,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// NotifyReload sends a reload message to all connected browser tabs
 func NotifyReload() {
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
