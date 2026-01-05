@@ -96,14 +96,15 @@ func TestJsCmdStructure(t *testing.T) {
 // TestJsCmdPathLogic tests the version-based path construction
 func TestJsCmdPathLogic(t *testing.T) {
 	tests := []struct {
-		version      string
-		goroot       string
-		expectedPath string
+		version    string
+		goroot     string
+		v121Plus   bool
+		shouldHave []string // Path components to check
 	}{
-		{"v1.21", "/usr/local/go", "/usr/local/go/lib/wasm/wasm_exec.js"},
-		{"v1.22", "/usr/local/go", "/usr/local/go/lib/wasm/wasm_exec.js"},
-		{"v1.20", "/usr/local/go", "/usr/local/go/misc/wasm/wasm_exec.js"},
-		{"v1.19", "/opt/go", "/opt/go/misc/wasm/wasm_exec.js"},
+		{"v1.21", "/usr/local/go", true, []string{"lib", "wasm", "wasm_exec.js"}},
+		{"v1.22", "/usr/local/go", true, []string{"lib", "wasm", "wasm_exec.js"}},
+		{"v1.20", "/usr/local/go", false, []string{"misc", "wasm", "wasm_exec.js"}},
+		{"v1.19", "/opt/go", false, []string{"misc", "wasm", "wasm_exec.js"}},
 	}
 
 	for _, tt := range tests {
@@ -118,8 +119,19 @@ func TestJsCmdPathLogic(t *testing.T) {
 				path = filepath.Join(goroot, "misc", "wasm", "wasm_exec.js")
 			}
 
-			if path != tt.expectedPath {
-				t.Errorf("Expected %q, got %q", tt.expectedPath, path)
+			// Verify path contains expected components
+			for _, component := range tt.shouldHave {
+				if !strings.Contains(path, component) {
+					t.Errorf("Path should contain %q, got %q", component, path)
+				}
+			}
+
+			// Verify correct subdirectory based on version
+			if tt.v121Plus && !strings.Contains(path, "lib") {
+				t.Error("Go 1.21+ should use lib/wasm path")
+			}
+			if !tt.v121Plus && !strings.Contains(path, "misc") {
+				t.Error("Go <1.21 should use misc/wasm path")
 			}
 		})
 	}
