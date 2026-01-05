@@ -3,7 +3,7 @@
 A simple CLI tool that streamlines Go WebAssembly development by handling the build process, runtime setup, and local testing.
 For thorough installation and uninstallation directions, please take a look at [the install directions](INSTALL.md).
 
-## 🚀 5-Minute Setup
+## 5-Minute Setup
 
 ### Prerequisites
 - Go 1.16+ installed
@@ -15,7 +15,7 @@ For thorough installation and uninstallation directions, please take a look at [
 go install github.com/vismainair/wasmate@latest
 ```
 
-## 📖 Your First WASM App
+## Your First WASM App
 
 Let's create a DOM-manipulating WASM application in 5 steps:
 
@@ -87,7 +87,7 @@ wasmate js
 wasmate build
 
 # Start the development server
-wasmate serve
+wasmate run
 ```
 
 **That's it!** Open your browser to `http://localhost:8080` and see your Go code running in the browser!
