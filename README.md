@@ -57,7 +57,7 @@ wasmate js
 ```
 
 ### `wasmate run`
-Serves your HTML and WebAssembly files over a local web server, making it easy to test your application.
+Serves your HTML and WebAssembly files over a local web server, making it easy to test your application. Hot reload is available with the `--dev` or `-D` flags.
 
 __Examples:__
 
@@ -65,6 +65,12 @@ __Examples:__
 ```
 wasmate run
 ```
+
+- Start the server with hot reload enabled:
+```
+wasmate run --dev
+```
+
 
 - Specify a different port:
 
