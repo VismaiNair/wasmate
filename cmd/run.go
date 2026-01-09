@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -33,16 +35,31 @@ var (
 const reloadScript = `
 <script>
   (function() {
-    const socket = new WebSocket('ws://' + window.location.host + '/ws');
-    socket.onmessage = function(msg) {
-      if (msg.data === 'reload') {
-        console.log('Wasmate: Change detected, reloading...');
-        window.location.reload();
-      }
-    };
-    socket.onclose = function() {
-      console.log('Wasmate: Hot reload disconnected.');
-    };
+    // Wait for the page to fully load first
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', connectWebSocket);
+    } else {
+      connectWebSocket();
+    }
+    
+    function connectWebSocket() {
+      const socket = new WebSocket('ws://' + window.location.host + '/ws');
+      socket.onmessage = function(msg) {
+        if (msg.data === 'reload') {
+          console.log('Wasmate: Change detected, reloading...');
+          window.location.reload();
+        }
+      };
+      socket.onopen = function() {
+        console.log('Wasmate: Hot reload connected.');
+      };
+      socket.onclose = function() {
+        console.log('Wasmate: Hot reload disconnected.');
+      };
+      socket.onerror = function(err) {
+        console.error('Wasmate: WebSocket error:', err);
+      };
+    }
   })();
 </script>
 `
@@ -66,11 +83,31 @@ var runCmd = &cobra.Command{
 		if dev {
 			handler = injectHotReload(mux)
 
+			// Find the WASM file to watch and rebuild
+			wasmFile := findWasmFile()
+			if wasmFile == "" {
+				fmt.Fprintf(os.Stderr, "⚠ Warning: No .wasm file found in current directory. Hot reload will not rebuild.\n")
+			}
+
 			watcher, err := hotreload.NewWatcher(
 				[]string{"."},
 				func() {
-					// Note: You should eventually add your build logic here
-					// before calling NotifyReload so the .wasm updates first.
+					fmt.Fprintf(os.Stdout, "Change detected, rebuilding...\n")
+
+					// Rebuild the WASM file
+					if wasmFile != "" {
+						err := RunBuild(".", wasmFile, false)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "✗ Build failed: %v\n", err)
+							return
+						}
+						fmt.Fprintf(os.Stdout, "✓ Rebuild complete\n")
+					}
+
+					// Small delay to ensure file is written
+					time.Sleep(100 * time.Millisecond)
+
+					// Notify browser to reload
 					NotifyReload()
 				},
 			)
@@ -99,6 +136,16 @@ var runCmd = &cobra.Command{
 	},
 }
 
+// findWasmFile looks for a .wasm file in the current directory
+func findWasmFile() string {
+	files, err := filepath.Glob("*.wasm")
+	if err != nil || len(files) == 0 {
+		return ""
+	}
+	// Return the first .wasm file found
+	return files[0]
+}
+
 // --- Middleware & Injection Logic ---
 
 func injectHotReload(next http.Handler) http.Handler {
@@ -114,7 +161,11 @@ func injectHotReload(next http.Handler) http.Handler {
 		}
 
 		// Record the response to modify the HTML
-		recorder := &responseRecorder{ResponseWriter: w, body: &bytes.Buffer{}}
+		recorder := &responseRecorder{
+			ResponseWriter: w,
+			body:           &bytes.Buffer{},
+			statusCode:     http.StatusOK,
+		}
 		next.ServeHTTP(recorder, r)
 
 		htmlContent := recorder.body.String()
@@ -122,12 +173,16 @@ func injectHotReload(next http.Handler) http.Handler {
 			// Inject script before closing body tag
 			modifiedHtml := strings.Replace(htmlContent, "</body>", reloadScript+"</body>", 1)
 
+			// Write status code first
+			w.WriteHeader(recorder.statusCode)
+
 			// Update headers and write the modified content
-			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Content-Length", fmt.Sprint(len(modifiedHtml)))
 			w.Write([]byte(modifiedHtml))
 		} else {
-			// If no body tag, write original content (e.g., small snippets or malformed HTML)
+			// If no body tag, write original content
+			w.WriteHeader(recorder.statusCode)
 			w.Write(recorder.body.Bytes())
 		}
 	})
@@ -135,7 +190,8 @@ func injectHotReload(next http.Handler) http.Handler {
 
 type responseRecorder struct {
 	http.ResponseWriter
-	body *bytes.Buffer
+	body       *bytes.Buffer
+	statusCode int
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
@@ -143,9 +199,7 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 }
 
 func (r *responseRecorder) WriteHeader(statusCode int) {
-	// We don't want to send the status code immediately because
-	// changing the body changes the Content-Length
-	r.ResponseWriter.WriteHeader(statusCode)
+	r.statusCode = statusCode
 }
 
 // --- WebSocket Handling ---
