@@ -12,61 +12,63 @@ import (
 
 var outputFile string
 
+// RunBuild is a shared function that can be called by other commands
+// showSpinner controls whether to display the spinner animation
+func RunBuild(target, output string, showSpinner bool) error {
+	buildArgs := []string{"build"}
+
+	if output != "" {
+		buildArgs = append(buildArgs, "-o", output)
+	}
+
+	buildArgs = append(buildArgs, target)
+
+	buildCmd := exec.Command("go", buildArgs...)
+	buildCmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+
+	var s *spinner.Spinner
+	if showSpinner {
+		s = spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+		s.Suffix = " Building WASM binary..."
+		s.Start()
+	}
+
+	// Changed variable name from 'output' to 'cmdOutput'
+	cmdOutput, err := buildCmd.CombinedOutput()
+
+	if showSpinner && s != nil {
+		s.Stop()
+	}
+
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, cmdOutput)
+	}
+
+	return nil
+}
+
 var buildCmd = &cobra.Command{
 	Use:   "build [package]",
 	Short: "Build Go code to WebAssembly.",
 	Long:  `Build Go code to WebAssembly (WASM) format. /nYou can specify a package or go file to build. If neither are specified, it defaults to all go files in the current directory. /nUnder the hood, it runs the command 'go build GOOS=js GOARCH=wasm'. This command is useful for preparing Go applications to run in a web environment using WebAssembly.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		target := "." // Default target is current directory
+		target := "."
 		if len(args) > 0 {
-			target = args[0] // If a package is specified, use it as target
+			target = args[0]
 		}
 
-		// Build the command arguments
-		buildArgs := []string{"build"}
-
-		// Add output flag if specified
-		if outputFile != "" {
-			buildArgs = append(buildArgs, "-o", outputFile)
-		}
-
-		// Add the target
-		buildArgs = append(buildArgs, target)
-
-		buildCmd := exec.Command("go", buildArgs...)
-		buildCmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
-
-		// Create and start spinner
-		s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
-		s.Suffix = " Building WASM binary..."
-		s.Start()
-
-		// Capture output but don't display it yet (so spinner stays clean)
-		output, err := buildCmd.CombinedOutput()
-
-		// Stop spinner before showing results
-		s.Stop()
-
+		// Call the shared build function with spinner enabled
+		err := RunBuild(target, outputFile, true)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "✗ Build failed: %v\n", err)
-			// Show the build output if there was an error
-			if len(output) > 0 {
-				fmt.Fprintf(os.Stderr, "%s\n", output)
-			}
 			os.Exit(1)
 		}
 
-		// Success message
+		// Determine output name for success message
 		outputName := outputFile
 		if outputName == "" {
-			// Determine the default output name
-			if target == "." {
-				// Get current directory name
-				dir, _ := os.Getwd()
-				outputName = dir + ".wasm"
-			} else {
-				outputName = target + ".wasm"
-			}
+			// Default output name logic
+			outputName = "main.wasm"
 		}
 
 		fmt.Fprintf(os.Stdout, "✓ Built %s\n", outputName)
