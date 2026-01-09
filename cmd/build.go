@@ -2,13 +2,15 @@ package cmd
 
 import (
 	"fmt"
-	"os"      // For working with the operating system
-	"os/exec" // For executing cli commands
+	"os"
+	"os/exec"
+	"time"
 
-	"github.com/spf13/cobra" // Importing the Cobra library for CLI apps
+	"github.com/briandowns/spinner"
+	"github.com/spf13/cobra"
 )
 
-var outputFile string // Variable to store the output file flag value
+var outputFile string
 
 var buildCmd = &cobra.Command{
 	Use:   "build [package]",
@@ -31,30 +33,47 @@ var buildCmd = &cobra.Command{
 		// Add the target
 		buildArgs = append(buildArgs, target)
 
-		buildCmd := exec.Command("go", buildArgs...) // Run the go build command
-		fmt.Fprintf(os.Stdout, "Creating WASM Build command... \n")
-		buildCmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm") // Set the environment variables for WebAssembly
+		buildCmd := exec.Command("go", buildArgs...)
+		buildCmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
 
-		buildCmd.Stdout = os.Stdout // Redirect standard output to the console
-		buildCmd.Stderr = os.Stderr // Redirect standard error to the console
+		// Create and start spinner
+		s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+		s.Suffix = " Building WASM binary..."
+		s.Start()
 
-		if outputFile != "" {
-			fmt.Fprintf(os.Stdout, "Building WASM to %s from provided file or package... \n", outputFile)
-		} else {
-			fmt.Fprintf(os.Stdout, "Building WASM from provided file or package... \n")
-		}
+		// Capture output but don't display it yet (so spinner stays clean)
+		output, err := buildCmd.CombinedOutput()
 
-		err := buildCmd.Run() // Execute the build command
+		// Stop spinner before showing results
+		s.Stop()
+
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Build failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "✗ Build failed: %v\n", err)
+			// Show the build output if there was an error
+			if len(output) > 0 {
+				fmt.Fprintf(os.Stderr, "%s\n", output)
+			}
 			os.Exit(1)
 		}
+
+		// Success message
+		outputName := outputFile
+		if outputName == "" {
+			// Determine the default output name
+			if target == "." {
+				// Get current directory name
+				dir, _ := os.Getwd()
+				outputName = dir + ".wasm"
+			} else {
+				outputName = target + ".wasm"
+			}
+		}
+
+		fmt.Fprintf(os.Stdout, "✓ Built %s\n", outputName)
 	},
 }
 
 func init() {
-	// Add the output file flag
 	buildCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file name (e.g., main.wasm)")
-
-	rootCmd.AddCommand(buildCmd) // Add the build command to the root command
+	rootCmd.AddCommand(buildCmd)
 }
